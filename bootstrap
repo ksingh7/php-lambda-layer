@@ -78,23 +78,31 @@ function lambdaResponse($url, $response, $isALB = false) {
     curl_close($ch);
 }
 
+function parseHeaders($rawResponse){ //For multi headers FastCGI response is not working
+  $HEADER_PATTERN = '#^([^\:]+):(.*)$#';
+  $headers = [];
+  $lines  = explode( PHP_EOL, $rawResponse );
+  foreach ($lines as $i => $line ){
+    if (preg_match($HEADER_PATTERN, $line, $matches )){
+      $key = trim( $matches[1]);
+      $key = str_replace('-', ' ', $key);
+      $key = ucwords($key);
+      $key = str_replace(' ', '-', $key);
+      if (!array_key_exists($key, $headers)) $headers[$key]= [];
+      $headers[$key][] = trim($matches[2]);
+      continue;
+    }
+    break;
+  }
+  return $headers;
+}
+
+
 function makeResponse($response) {
     $headers = [];
     $status = 200;
-    foreach($response->getHeaders() as $name => $values) {
-        $name = str_replace('-', ' ', $name);
-        $name = ucwords($name);
-        $name = str_replace(' ', '-', $name);
-        $headers[$name] = [];
-        if (is_array($values)) {
-            foreach($values as $value) {
-                $headers[$name][] = $value;
-            }
-        } else {
-            if (strcasecmp($name, "status") == 0) $status = preg_replace('/[^0-9]/', '', $values);
-            $headers[$name][] = $values;
-        }
-    }
+    $headers = parseHeaders($response->getRawResponse());
+    if (array_key_exists('Status', $headers)) $status = preg_replace('/[^0-9]/', '', $headers['Status'][0]);
     $body = $response->getBody();
     return ["multiValueHeaders" => $headers, "body" => $body, "statusCode" => intval($status)];
 }
