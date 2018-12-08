@@ -1,230 +1,219 @@
 #!/opt/bin/php -c/opt/php.ini
 <?php
-
 error_reporting(E_ALL | E_STRICT);
-
+require __DIR__ . '/vendor/autoload.php';
+use Symfony\Component\Process\Process;
+use hollodotme\FastCGI\Client;
+use hollodotme\FastCGI\Requests\AbstractRequest;
+use hollodotme\FastCGI\SocketConnections\UnixDomainSocket;
+require __DIR__ . '/vendor/autoload.php';
 $AWS_LAMBDA_RUNTIME_API = getenv('AWS_LAMBDA_RUNTIME_API');
-
-function start_webserver() {
-  $pid = pcntl_fork();
-  switch($pid) {
-    case -1:
-      die('Failed to fork webserver process');
-
-    case 0:
-      // exec the command
-      $HANDLER = getenv('_HANDLER');
-      chdir('/var/task');
-      exec("php -S localhost:8000 -c /var/task/php.ini -d extension_dir=/opt/lib/php/7.1/modules '$HANDLER'");
-      exit;
-
-    // return the child pid to parent
-    default:
-      // Wait for child server to start
-      sleep(1);
-      return $pid;
-  }
+$socket = '/tmp/php-cgi.sock';
+function start_webserver($socket) {
+		chdir('/var/task');
+		$cgi = new Process("php-cgi -b {$socket} -c /var/task/php.ini -d extension_dir=/opt/lib/php/7.1/modules");
+		$cgi->setTimeout(null);
+		$cgi->start(function ($type, $output) {
+				if ($type === Process::ERR) {
+						echo ($output);
+						exit(1);
+				}
+		});
+		register_shutdown_function(function () use (&$cgi) {
+				$cgi->stop();
+		});
+		$wait = 10000; // 10ms
+		$timeout = 5000000; // 5 secs
+		$elapsed = 0;
+		while (!file_exists($socket)) {
+				usleep($wait);
+				clearstatcache();
+				$elapsed += $wait;
+				if ($elapsed > $timeout) {
+						echo "Timeout while waiting for socket at {$socket}..\n";
+						exit(1);
+				}
+		}
+		echo "Fastcgi socket running on {$socket}";
 }
 
 function fail($AWS_LAMBDA_RUNTIME_API, $invocation_id, $message) {
-  $ch = curl_init("http://$AWS_LAMBDA_RUNTIME_API/2018-06-01/runtime/invocation/$invocation_id/response");
-
-  $response = array();
-
-  $response['statusCode'] = 500;
-  $response['body'] = $message;
-
-  $response_json = json_encode($response);
-
-  curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'POST');
-  curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
-  curl_setopt($ch, CURLOPT_POSTFIELDS, $response_json);
-  curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-    'Content-Type: application/json',
-    'Content-Length: ' . strlen($response_json)
-  ));
-
-  curl_exec($ch);
-  curl_close($ch);
+		$url = "http://$AWS_LAMBDA_RUNTIME_API/2018-06-01/runtime/invocation/$invocation_id/response";
+		$response = ['statusCode' => 500, 'body' => $message];
+		lambdaResponse($url, $response);
 }
 
-function invocationResponse($AWS_LAMBDA_RUNTIME_API, $invocation_id,$response,$event){
-  $http_codes = [100=>'Continue',101=>'Switching Protocols',102=>'Processing',200=>'OK',201=>'Created',202=>'Accepted',203=>'Non-Authoritative Information',204=>'No Content',205=>'Reset Content',206=>'Partial Content',207=>'Multi-Status',208=>'Already Reported',226=>'IM Used',300=>'Multiple Choices',301=>'Moved Permanently',302=>'Found',303=>'See Other',304=>'Not Modified',305=>'Use Proxy',306=>'Switch Proxy',307=>'Temporary Redirect',308=>'Permanent Redirect',400=>'Bad Request',401=>'Unauthorized',402=>'Payment Required',403=>'Forbidden',404=>'Not Found',405=>'Method Not Allowed',406=>'Not Acceptable',407=>'Proxy Authentication Required',408=>'Request Timeout',409=>'Conflict',410=>'Gone',411=>'Length Required',412=>'Precondition Failed',413=>'Request Entity Too Large',414=>'Request-URI Too Long',415=>'Unsupported Media Type',416=>'Requested Range Not Satisfiable',417=>'Expectation Failed',418=>'I\'m a teapot',419=>'Authentication Timeout',420=>'Enhance Your Calm',420=>'Method Failure',422=>'Unprocessable Entity',423=>'Locked',424=>'Failed Dependency',424=>'Method Failure',425=>'Unordered Collection',426=>'Upgrade Required',428=>'Precondition Required',429=>'Too Many Requests',431=>'Request Header Fields Too Large',444=>'No Response',449=>'Retry With',450=>'Blocked by Windows Parental Controls',451=>'Redirect',451=>'Unavailable For Legal Reasons',494=>'Request Header Too Large',495=>'Cert Error',496=>'No Cert',497=>'HTTP to HTTPS',499=>'Client Closed Request',500=>'Internal Server Error',501=>'Not Implemented',502=>'Bad Gateway',503=>'Service Unavailable',504=>'Gateway Timeout',505=>'HTTP Version Not Supported',506=>'Variant Also Negotiates',507=>'Insufficient Storage',508=>'Loop Detected',509=>'Bandwidth Limit Exceeded',510=>'Not Extended',511=>'Network Authentication Required',598=>'Network read timeout error',599=>'Network connect timeout error'];
-  $ch = curl_init("http://$AWS_LAMBDA_RUNTIME_API/2018-06-01/runtime/invocation/$invocation_id/response");
-  $isALB = array_key_exists("elb", $event['requestContext']);
-  if ($isALB) { // Add Headers For ALB
-    $status = $response["statusCode"];
-    if (array_key_exists($status, $http_codes)) {
-        $response["statusDescription"] = "$status ". $http_codes[$status];
-    } else {
-        $response["statusDescription"] = "$status Unknown";
-    }
-    $response["isBase64Encoded"] = false;
-  }
-  $response_json = json_encode($response);
-  var_dump($response_json);
-  curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'POST');
-  curl_setopt($ch, CURLOPT_RETURNTRANSFER, TRUE);
-  curl_setopt($ch, CURLOPT_POSTFIELDS, $response_json);
-  if (!$isALB){
-  curl_setopt($ch, CURLOPT_HTTPHEADER, array(
-    'Content-Type: application/json',
-    'Content-Length: ' . strlen($response_json)
-  ));
-}
-  curl_exec($ch);
-  curl_close($ch);
+function invocationResponse($AWS_LAMBDA_RUNTIME_API, $invocation_id, $response, $event) {
+		$isALB = array_key_exists("elb", $event['requestContext']);
+		$url = "http://$AWS_LAMBDA_RUNTIME_API/2018-06-01/runtime/invocation/$invocation_id/response";
+		lambdaResponse($url, $response, $isALB);
 }
 
+function lambdaResponse($url, $response, $isALB = false) {
+		$http_codes = [100 => 'Continue', 101 => 'Switching Protocols', 102 => 'Processing', 200 => 'OK', 201 => 'Created', 202 => 'Accepted', 203 => 'Non-Authoritative Information', 204 => 'No Content', 205 => 'Reset Content', 206 => 'Partial Content', 207 => 'Multi-Status', 208 => 'Already Reported', 226 => 'IM Used', 300 => 'Multiple Choices', 301 => 'Moved Permanently', 302 => 'Found', 303 => 'See Other', 304 => 'Not Modified', 305 => 'Use Proxy', 306 => 'Switch Proxy', 307 => 'Temporary Redirect', 308 => 'Permanent Redirect', 400 => 'Bad Request', 401 => 'Unauthorized', 402 => 'Payment Required', 403 => 'Forbidden', 404 => 'Not Found', 405 => 'Method Not Allowed', 406 => 'Not Acceptable', 407 => 'Proxy Authentication Required', 408 => 'Request Timeout', 409 => 'Conflict', 410 => 'Gone', 411 => 'Length Required', 412 => 'Precondition Failed', 413 => 'Request Entity Too Large', 414 => 'Request-URI Too Long', 415 => 'Unsupported Media Type', 416 => 'Requested Range Not Satisfiable', 417 => 'Expectation Failed', 418 => 'I\'m a teapot', 419 => 'Authentication Timeout', 420 => 'Enhance Your Calm', 420 => 'Method Failure', 422 => 'Unprocessable Entity', 423 => 'Locked', 424 => 'Failed Dependency', 424 => 'Method Failure', 425 => 'Unordered Collection', 426 => 'Upgrade Required', 428 => 'Precondition Required', 429 => 'Too Many Requests', 431 => 'Request Header Fields Too Large', 444 => 'No Response', 449 => 'Retry With', 450 => 'Blocked by Windows Parental Controls', 451 => 'Redirect', 451 => 'Unavailable For Legal Reasons', 494 => 'Request Header Too Large', 495 => 'Cert Error', 496 => 'No Cert', 497 => 'HTTP to HTTPS', 499 => 'Client Closed Request', 500 => 'Internal Server Error', 501 => 'Not Implemented', 502 => 'Bad Gateway', 503 => 'Service Unavailable', 504 => 'Gateway Timeout', 505 => 'HTTP Version Not Supported', 506 => 'Variant Also Negotiates', 507 => 'Insufficient Storage', 508 => 'Loop Detected', 509 => 'Bandwidth Limit Exceeded', 510 => 'Not Extended', 511 => 'Network Authentication Required', 598 => 'Network read timeout error', 599 => 'Network connect timeout error'];
+		$ch = curl_init($url);
+		if ($isALB) { // Add Headers For ALB
+				$status = $response["statusCode"];
+				if (array_key_exists($status, $http_codes)) {
+						$response["statusDescription"] = "$status " . $http_codes[$status];
+				}
+				else {
+						$response["statusDescription"] = "$status Unknown";
+				}
+				$response["isBase64Encoded"] = false;
+		}
+    $response_json = json_encode($response);
+    var_dump($response_json);
 
-function sendToApp($uri,$event,$invocation_id){
-  var_dump("http://localhost:8000$uri");
-  $ch = curl_init("http://localhost:8000$uri");
+		curl_setopt($ch, CURLOPT_CUSTOMREQUEST, 'POST');
+		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+		curl_setopt($ch, CURLOPT_POSTFIELDS, $response_json);
+		if (!$isALB) {
+				curl_setopt($ch, CURLOPT_HTTPHEADER, array(
+						'Content-Type: application/json',
+						'Content-Length: ' . strlen($response_json)
+				));
+		}
+		curl_exec($ch);
+		curl_close($ch);
+}
 
-  curl_setopt($ch, CURLOPT_FOLLOWLOCATION, TRUE);
-  var_dump(json_encode($event));
-  curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $event['httpMethod']);
+function makeResponse($response) {
+		$headers = [];
+		$status = 200;
+		foreach ($response->getHeaders() as $name => $values) {
+				$name = str_replace('-', ' ', $name);
+				$name = ucwords($name);
+				$name = str_replace(' ', '-', $name);
+				$headers[$name] = [];
+				if (is_array($values)) {
+						foreach ($values as $value) {
+								$headers[$name][] = $value;
+						}
+				}
+				else {
+						if (strcasecmp($name, "status") == 0) $status = preg_replace('/[^0-9]/', '', $values);
+						$headers[$name][] = $values;
+				}
+		}
+		$body = $response->getBody();
+		return ["multiValueHeaders" => $headers, "body" => $body, "statusCode" => intval($status) ];
+}
 
-  if (array_key_exists('body', $event)) {
-    $body = $event['body'];
-    if (array_key_exists('isBase64Encoded', $event) && $event['isBase64Encoded']) {
-      $body = base64_decode($body);
-    }
-  } else {
-    $body = '';
-  }
-  var_dump($body);
-  if (strlen($body) > 0) {
-    curl_setopt($ch, CURLOPT_INFILESIZE, strlen($body));
-    // curl_setopt($ch, CURLOPT_READFUNCTION, function ($ch, $fd, $length) use ($body) {
-    //   return $body;
-    // });
-    curl_setopt($ch, CURLOPT_POSTFIELDS,$body);
-  }
-
-  if (array_key_exists('multiValueHeaders', $event)) {
-    $headers = array();
-    foreach ($event['multiValueHeaders'] as $name => $values) {
-      foreach ($values as $value) {
-        if (strcasecmp($name, "content-length") == 0){
-          $len = strlen($body);
-          array_push($headers, "${name}: ${len}");
-        }
-        else array_push($headers, "${name}: ${value}");
+function sendToApp($uri, $event, $client) {
+		$scriptFilename = '/var/task/' . getenv('_HANDLER');
+		$method = $event['httpMethod'] ?? 'GET';
+    if (array_key_exists('body', $event)) {
+      $content = $event['body'];
+      if (array_key_exists('isBase64Encoded', $event) && $event['isBase64Encoded']) {
+        $content = base64_decode($content);
       }
     }
-
-    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-  }
-
-  $response = array();
-  $response['multiValueHeaders'] = array();
-  $response['body'] = '';
-  $isRedirect = false;
-  curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $header) use (&$response,&$AWS_LAMBDA_RUNTIME_API, &$invocation_id,&$event,&$isRedirect) {
-    if (preg_match('/HTTP\/1.1 (\d+) .*/', $header, $matches)) {
-      $response['statusCode'] = intval($matches[1]);
-      return strlen($header);
+    else $content = '';
+		$request = new class ($method, $scriptFilename, $content) extends AbstractRequest {
+				private $method;
+				public function __construct(string $method, string $scriptFilename, string $content) {
+						$this->method = $method;
+						parent::__construct($scriptFilename, $content);
+				}
+				public function getRequestMethod() : string {
+						return $this->method;
+				}
+		};
+		$request->setRequestUri($event['path'] ?? '/');
+		$request->setRemoteAddress('127.0.0.1');
+		$request->setRemotePort(80);
+		$request->setServerName('127.0.0.1');
+		$request->setServerPort(80);
+		if (isset($event['multiValueHeaders']['Host'])) {
+				$request->setServerName($event['multiValueHeaders']['Host'][0]);
+		}
+		if (isset($event['multiValueHeaders']['Content-Type'])) {
+				$request->setContentType($event['multiValueHeaders']['Content-Type'][0]);
+		}
+    if (array_key_exists('multiValueQueryStringParameters', $event) && $event['multiValueQueryStringParameters']) {
+      $query = [];
+      foreach ($event['multiValueQueryStringParameters'] as $key => $value) $query[$key]=$value[0];
+      if ($query) $request->setCustomVar('QUERY_STRING', http_build_query($query));
     }
 
-    if (!preg_match('/:\s*/', $header)) {
-      return strlen($header);
-    }
-
-    [$name, $value] = preg_split('/:\s*/', $header, 2);
-
-    $name = trim($name);
-    $value = trim($value);
-
-    if ($name == '') {
-      return strlen($header);
-    }
-    if (!array_key_exists($name, $response['multiValueHeaders'])) {
-      $response['multiValueHeaders'][$name] = array();
-    }
-
-    array_push($response['multiValueHeaders'][$name], $value);
-    if (strcasecmp($name, "location") == 0) {
-      $isRedirect=true;
-      return($response);
-    }
-
-    return strlen($header);
-  });
-
-  curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (&$response,&$isRedirect) {
-    if (!$isRedirect) $response['body'] .= $chunk;
-    return strlen($chunk);
-  });
-
-  curl_exec($ch);
-  curl_close($ch);
-  return $response;
+		if (array_key_exists('multiValueHeaders', $event)) {
+				$headers = array();
+				foreach ($event['multiValueHeaders'] as $name => $values) {
+						foreach ($values as $value) {
+								$key = 'HTTP_' . strtoupper(str_replace('-', '_', $name));
+								//if (strcasecmp($name, "content-length") == 0) $request->setCustomVar($key, strlen($body));
+								//else
+                $request->setCustomVar($key, $value);
+						}
+				}
+		}
+		return $client->sendRequest($request);
 }
-function nextInvocation($AWS_LAMBDA_RUNTIME_API){
-  $invocation_id = '';
-  $ch = curl_init("http://$AWS_LAMBDA_RUNTIME_API/2018-06-01/runtime/invocation/next");
-  curl_setopt($ch, CURLOPT_FOLLOWLOCATION, TRUE);
-  curl_setopt($ch, CURLOPT_FAILONERROR, TRUE);
-  curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $header) use (&$invocation_id) {
-    if (!preg_match('/:\s*/', $header)) {
-      return strlen($header);
-    }
 
-    [$name, $value] = preg_split('/:\s*/', $header, 2);
+function nextInvocation($AWS_LAMBDA_RUNTIME_API) {
+		$invocation_id = '';
+		$ch = curl_init("http://$AWS_LAMBDA_RUNTIME_API/2018-06-01/runtime/invocation/next");
+		curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+		curl_setopt($ch, CURLOPT_FAILONERROR, true);
+		curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $header) use (&$invocation_id) {
+				if (!preg_match('/:\s*/', $header)) {
+						return strlen($header);
+				}
 
-    if (strtolower($name) == 'lambda-runtime-aws-request-id') {
-      $invocation_id = trim($value);
-    }
+				[$name, $value] = preg_split('/:\s*/', $header, 2);
 
-    return strlen($header);
-  });
+				if (strtolower($name) == 'lambda-runtime-aws-request-id') {
+						$invocation_id = trim($value);
+				}
 
-  $body = '';
+				return strlen($header);
+		});
 
-  curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (&$body) {
-    $body .= $chunk;
-    return strlen($chunk);
-  });
-  curl_exec($ch);
-  if (curl_error($ch)) {
-    die('Failed to fetch next Lambda invocation: ' . curl_error($ch) . "\n");
-  }
+		$body = '';
 
-  if ($invocation_id == '') {
-    die('Failed to determine Lambda invocation ID');
-  }
-  curl_close($ch);
+		curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $chunk) use (&$body) {
+				$body .= $chunk;
+				return strlen($chunk);
+		});
+		curl_exec($ch);
+		if (curl_error($ch)) {
+				die('Failed to fetch next Lambda invocation: ' . curl_error($ch) . "\n");
+		}
 
-  if (!$body) {
-    die("Empty Lambda invocation response\n");
-  }
-  $event = json_decode($body, TRUE);
-  if (!array_key_exists('requestContext', $event)) {
-    fail($AWS_LAMBDA_RUNTIME_API, $invocation_id, 'Event is not an API Gateway request');
-    return ['uri'=>'','invocation_id'=>$invocation_id,'event'=>$event];
-  }
-  $uri = $event['path'];
-  if (array_key_exists('multiValueQueryStringParameters', $event) && $event['multiValueQueryStringParameters']) {
-    $query = [];
-    foreach ($event['multiValueQueryStringParameters'] as $key => $value)
-      $query[$key]=$value[0];
-    if ($query) $uri.= "?" . http_build_query($query);
-  }
-  return ['uri'=>$uri,'invocation_id'=>$invocation_id,'event'=>$event];
+		if ($invocation_id == '') {
+				die('Failed to determine Lambda invocation ID');
+		}
+		curl_close($ch);
 
+		if (!$body) {
+				die("Empty Lambda invocation response\n");
+		}
+		$event = json_decode($body, true);
+		if (!array_key_exists('requestContext', $event)) {
+				fail($AWS_LAMBDA_RUNTIME_API, $invocation_id, 'Event is not an API Gateway request');
+				return ['uri' => '', 'invocation_id' => $invocation_id, 'event' => $event];
+		}
+		$uri = $event['path'];
+		if (array_key_exists('multiValueQueryStringParameters', $event) && $event['multiValueQueryStringParameters']) {
+				$query = [];
+				foreach ($event['multiValueQueryStringParameters'] as $key => $value) $query[$key] = $value[0];
+				if ($query) $uri .= "?" . http_build_query($query);
+		}
+		return ['uri' => $uri, 'invocation_id' => $invocation_id, 'event' => $event];
 }
-start_webserver();
-
+start_webserver($socket);
+$client = new Client(new UnixDomainSocket($socket));
 while (true) {
-  $params = nextInvocation($AWS_LAMBDA_RUNTIME_API);
-  $event = $params["event"];
-  $invocation_id = $params["invocation_id"];
-  $uri = $params["uri"];
-  if ($invocation_id && $event){
-    $response = sendToApp($uri,$event,$invocation_id);
-    invocationResponse($AWS_LAMBDA_RUNTIME_API, $invocation_id,$response,$event);
-  }
+		$params = nextInvocation($AWS_LAMBDA_RUNTIME_API);
+		$event = $params["event"];
+		$invocation_id = $params["invocation_id"];
+		$uri = $params["uri"];
+		if ($invocation_id && $event) {
+        var_dump(json_encode($event));
+				$response = sendToApp($uri, $event, $client);
+        invocationResponse($AWS_LAMBDA_RUNTIME_API, $invocation_id, makeResponse($response) , $event);
+		}
 }
 
 ?>
