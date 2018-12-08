@@ -1,6 +1,5 @@
 #!/opt/bin/php -c/opt/php.ini
-
-<? php
+<?php
 error_reporting(E_ALL | E_STRICT);
 require __DIR__.'/vendor/autoload.php';
 use Symfony\Component\Process\Process;
@@ -102,7 +101,7 @@ function makeResponse($response) {
 
 function sendToApp($uri, $event, $client) {
     $scriptFilename = '/var/task/'.getenv('_HANDLER');
-    $method = $event['httpMethod'] ? ? 'GET';
+    $method = $event['httpMethod'] ?? 'GET';
     if (array_key_exists('body', $event)) {
         $content = $event['body'];
         if (array_key_exists('isBase64Encoded', $event) && $event['isBase64Encoded']) {
@@ -121,7 +120,7 @@ function sendToApp($uri, $event, $client) {
             return $this->method;
         }
     };
-    $request->setRequestUri($event['path'] ? ? '/');
+    $request->setRequestUri($event['path'] ?? '/');
     $request->setRemoteAddress('127.0.0.1');
     $request->setRemotePort(80);
     $request->setServerName('127.0.0.1');
@@ -174,7 +173,7 @@ function nextInvocation($AWS_LAMBDA_RUNTIME_API) {
     $body = '';
 
     curl_setopt($ch, CURLOPT_WRITEFUNCTION, function($ch, $chunk) use( & $body) {
-        $body. = $chunk;
+        $body.= $chunk;
         return strlen($chunk);
     });
     curl_exec($ch);
@@ -200,7 +199,7 @@ function nextInvocation($AWS_LAMBDA_RUNTIME_API) {
     if (array_key_exists('multiValueQueryStringParameters', $event) && $event['multiValueQueryStringParameters']) {
         $query = [];
         foreach($event['multiValueQueryStringParameters'] as $key => $value) $query[$key] = $value[0];
-        if ($query) $uri. = "?".http_build_query($query);
+        if ($query) $uri .= "?".http_build_query($query);
     }
     return ['uri' => $uri, 'invocation_id' => $invocation_id, 'event' => $event];
 }
