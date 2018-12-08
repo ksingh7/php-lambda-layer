@@ -11,6 +11,7 @@ $AWS_LAMBDA_RUNTIME_API = getenv('AWS_LAMBDA_RUNTIME_API');
 $socket = '/tmp/php-cgi.sock';
 function start_webserver($socket) {
 		chdir('/var/task');
+    //https://github.com/mnapoli/bref-bootstrap-benchmarks/pull/7
 		$cgi = new Process("php-cgi -b {$socket} -c /var/task/php.ini -d extension_dir=/opt/lib/php/7.1/modules");
 		$cgi->setTimeout(null);
 		$cgi->start(function ($type, $output) {
