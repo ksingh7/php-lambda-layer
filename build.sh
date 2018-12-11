@@ -1,6 +1,6 @@
 #!/bin/bash
 
-yum install -y php71-cli zip php71-devel php71-mbstring.x86_64 php71-mcrypt.x86_64 php71-pdo.x86_64 php71-pecl-redis.x86_64 php71-mysqlnd.x86_64
+yum install -y php71-cli zip php71-devel php71-mbstring.x86_64 php71-mcrypt.x86_64 php71-pdo.x86_64 php71-pecl-redis.x86_64 php71-mysqlnd.x86_64 php71-fpm.x86_64
 cd /tmp
 #install Composer and Plugins needed
 mkdir composer && cd composer
@@ -23,6 +23,7 @@ cp /opt/layer/php.ini .
 mkdir bin
 cp /usr/bin/php bin/
 cp /usr/bin/php-cgi bin/
+cp /usr/sbin/php-fpm bin/
 
 mkdir lib
 for lib in libncurses.so.5 libtinfo.so.5 libpcre.so.0; do
