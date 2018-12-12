@@ -9,6 +9,25 @@ use hollodotme\FastCGI\SocketConnections\UnixDomainSocket;
 use hollodotme\FastCGI\Exceptions\TimedoutException;
 $AWS_LAMBDA_RUNTIME_API = getenv('AWS_LAMBDA_RUNTIME_API');
 $socket = '/tmp/php-fpm.sock';
+function is_server_started($socket){
+    clearstatcache(false, $socket);
+    return file_exists($socket);
+}
+function wait_for_server($socket){
+    $wait = 5000; // 5ms
+    $timeout = 5000000; // 5 secs
+    $elapsed = 0;
+    while (!is_server_started($socket)) {
+        usleep($wait);
+        $elapsed += $wait;
+        if ($elapsed > $timeout) {
+            echo "Timeout while waiting for socket at {$socket}..";
+            exit(1);
+        }
+    }
+    echo "FastCGI started on {$socket}";
+}
+
 function start_webserver($socket) {
     $config =  '/var/task/php-fpm.conf';
     //https://github.com/mnapoli/bref-bootstrap-benchmarks/pull/7
@@ -23,26 +42,14 @@ function start_webserver($socket) {
         echo "Fastcgi Stopping";
         $cgi->stop();
     });
-    $wait = 5000; // 10ms
-    $timeout = 5000000; // 5 secs
-    $elapsed = 0;
-    while (!file_exists($socket)) {
-        usleep($wait);
-        clearstatcache();
-        $elapsed += $wait;
-        if ($elapsed > $timeout) {
-            echo "Timeout while waiting for socket at {$socket}..\n";
-            exit(1);
-        }
-    }
-    echo "Fastcgi socket running on {$socket}";
+    wait_for_server($socket);
     $socketTimeout = 30000;
     return new Client(new UnixDomainSocket($socket,5000,$socketTimeout));
 }
 
-function fail($AWS_LAMBDA_RUNTIME_API, $invocation_id, $message) {
+function fail($AWS_LAMBDA_RUNTIME_API, $invocation_id, $message,$statusCode=500) {
     $url = "http://$AWS_LAMBDA_RUNTIME_API/2018-06-01/runtime/invocation/$invocation_id/response";
-    $response = ['statusCode' => 500, 'body' => $message];
+    $response = ['statusCode' => $statusCode, 'body' => $message];
     lambdaResponse($url, $response);
 }
 
@@ -213,7 +220,7 @@ function nextInvocation($AWS_LAMBDA_RUNTIME_API) {
     return ['uri' => $uri, 'invocation_id' => $invocation_id, 'event' => $event];
 }
 while (true) {
-    if (!file_exists($socket) || !isset($client)) $client = start_webserver($socket);
+    if (!is_server_started($socket)) $client = start_webserver($socket);
     $params = nextInvocation($AWS_LAMBDA_RUNTIME_API);
     $event = $params["event"];
     $invocation_id = $params["invocation_id"];
@@ -222,13 +229,11 @@ while (true) {
         // var_dump(json_encode($event));
         try {
           $response = makeResponse(sendToApp($uri, $event, $client));
+          invocationResponse($AWS_LAMBDA_RUNTIME_API, $invocation_id, $response, $event);
         }
         catch (TimedoutException $e) {
-          var_dump("TIMED OUT!");
-          $headers = ["Status"=> ["504 Gateway Timeout"],"X-Powered-By"=> ["PHP/7.1.7"],"Content-Type"=> ["application/json"]];
-          $response = ["multiValueHeaders" => $headers, "body" => json_encode(["message"=>"Timed Out"]), "statusCode" => 504];
+          fail($lambdaRuntimeApi, $invocationId, 'Gateway Timeout', 504);
         }
-        invocationResponse($AWS_LAMBDA_RUNTIME_API, $invocation_id, $response, $event);
     }
 }
 
