@@ -6,13 +6,13 @@ use Symfony\Component\Process\Process;
 use hollodotme\FastCGI\Client;
 use hollodotme\FastCGI\Requests\AbstractRequest;
 use hollodotme\FastCGI\SocketConnections\UnixDomainSocket;
+use hollodotme\FastCGI\Exceptions\TimedoutException;
 $AWS_LAMBDA_RUNTIME_API = getenv('AWS_LAMBDA_RUNTIME_API');
 $socket = '/tmp/php-fpm.sock';
 function start_webserver($socket) {
     $config =  '/var/task/php-fpm.conf';
     //https://github.com/mnapoli/bref-bootstrap-benchmarks/pull/7
-    $cgi = new Process("php-fpm --fpm-config {$config} -c /var/task/php.ini -d extension_dir=/opt/lib/php/7.1/modules");
-    $cgi->setTimeout(null);
+    $cgi = new Process("php-fpm --fpm-config {$config} -c /var/task/php.ini -d extension_dir=/opt/lib/php/7.1/modules --nodaemonize");
     $cgi->start(function($type, $output) {
         if ($type === Process::ERR) {
             echo($output);
@@ -20,6 +20,7 @@ function start_webserver($socket) {
         }
     });
     register_shutdown_function(function() use( & $cgi) {
+        echo "Fastcgi Stopping";
         $cgi->stop();
     });
     $wait = 5000; // 10ms
@@ -35,7 +36,8 @@ function start_webserver($socket) {
         }
     }
     echo "Fastcgi socket running on {$socket}";
-    return new Client(new UnixDomainSocket($socket));
+    $socketTimeout = 30000;
+    return new Client(new UnixDomainSocket($socket,5000,$socketTimeout));
 }
 
 function fail($AWS_LAMBDA_RUNTIME_API, $invocation_id, $message) {
@@ -211,15 +213,22 @@ function nextInvocation($AWS_LAMBDA_RUNTIME_API) {
     return ['uri' => $uri, 'invocation_id' => $invocation_id, 'event' => $event];
 }
 while (true) {
-    if (!file_exists($socket)) $client = start_webserver($socket);
+    if (!file_exists($socket) || !isset($client)) $client = start_webserver($socket);
     $params = nextInvocation($AWS_LAMBDA_RUNTIME_API);
     $event = $params["event"];
     $invocation_id = $params["invocation_id"];
     $uri = $params["uri"];
-    if ($invocation_id && $event) {
+    if ($invocation_id && $event && $client) {
         // var_dump(json_encode($event));
-        $response = sendToApp($uri, $event, $client);
-        invocationResponse($AWS_LAMBDA_RUNTIME_API, $invocation_id, makeResponse($response), $event);
+        try {
+          $response = makeResponse(sendToApp($uri, $event, $client));
+        }
+        catch (TimedoutException $e) {
+          var_dump("TIMED OUT!");
+          $headers = ["Status"=> ["504 Gateway Timeout"],"X-Powered-By"=> ["PHP/7.1.7"],"Content-Type"=> ["application/json"]];
+          $response = ["multiValueHeaders" => $headers, "body" => json_encode(["message"=>"Timed Out"]), "statusCode" => 504];
+        }
+        invocationResponse($AWS_LAMBDA_RUNTIME_API, $invocation_id, $response, $event);
     }
 }
 
