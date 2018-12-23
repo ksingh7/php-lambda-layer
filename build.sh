@@ -10,10 +10,11 @@ php composer-setup.php
 php -r "unlink('composer-setup.php');"
 php composer.phar require hollodotme/fast-cgi-client:^2.0
 php composer.phar require symfony/process
+
 #Install Phalcon
-git clone --depth=1 "git://github.com/phalcon/cphalcon.git"
-cd cphalcon/build && ./install
-rm -rf /tmp/cphalcon
+#git clone --depth=1 "git://github.com/phalcon/cphalcon.git"
+#cd cphalcon/build && ./install
+#rm -rf /tmp/cphalcon
 
 mkdir /tmp/layer
 cd /tmp/layer

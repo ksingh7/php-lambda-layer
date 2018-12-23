@@ -1,0 +1,23 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: PHP Serverless Application
+Transform: AWS::Serverless-2016-10-31
+Resources:
+  api1:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub ${AWS::StackName}-api2
+      Description: PHP API2
+      CodeUri: src/api2
+      Runtime: provided
+      Handler: Snake.php
+      MemorySize: 128
+      Timeout: 300
+      Tracing: Active
+      Layers:
+        - !Sub arn:aws:lambda:${AWS::Region}:887080169480:layer:php71:5
+      Events:
+        api:
+          Type: Api
+          Properties:
+            Path: /
+            Method: ANY
